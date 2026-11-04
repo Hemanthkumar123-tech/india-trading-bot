@@ -1,0 +1,6 @@
+.env
+state.json
+tokens.json
+bg.mp4
+node_modules/
+*.log

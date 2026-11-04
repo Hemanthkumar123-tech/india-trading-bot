@@ -1,0 +1,9 @@
+{
+  "name": "india-trading-bot",
+  "version": "1.0.0",
+  "description": "Paper-first Indian stock assistant: Telegram alerts, one-click buy, market regime detection, safe mode, secure dashboard, optional Angel One live trading.",
+  "main": "src/bot.js",
+  "scripts": { "start": "node --env-file=.env src/bot.js" },
+  "engines": { "node": ">=20" },
+  "license": "MIT"
+}
