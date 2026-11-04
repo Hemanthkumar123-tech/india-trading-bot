@@ -38,3 +38,15 @@ Graphs are rendered by the free QuickChart.io service (it receives chart numbers
 ## Dashboard link from your phone
 Run `cloudflared tunnel --url http://localhost:3000` (free) and open the https link it prints.
 Put that link in `.env` as `DASH_URL=...` so `/dashboard` sends it to you. The link changes each run.
+
+## Run entirely on GitHub (no computer needed)
+Uses GitHub Actions (`.github/workflows/bot.yml`). Add repository secrets `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID`
+(Settings > Secrets and variables > Actions). The bot runs about every 10 minutes in market hours, paper money only.
+Telegram buttons and commands are answered on the next run. `/dashboard` sends a dashboard.html snapshot file to your chat.
+Live Angel One trading and the password-protected live dashboard need an always-on machine and are not available in this mode.
+
+## Web dashboard on GitHub Pages
+After each run the bot publishes `https://<your-username>.github.io/<repo>/`. The data file is AES-256-GCM encrypted
+with your `DASH_PASS` secret and decrypted in your browser, so the page asks for the password. It updates every ~10 min
+in market hours. Needs: public repo (free plan), Settings > Pages > Source = GitHub Actions, secret `DASH_PASS` (16+ random characters).
+Controls are disabled on this page; use Telegram.
