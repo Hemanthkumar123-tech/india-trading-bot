@@ -83,6 +83,23 @@ async function candles(ySymbol) {
   return { close, vol, ohlc };
 }
 
+// Yahoo intraday quote: unlike the 1-year daily candles used for indicators, this
+// endpoint supplies the latest intraday bar and its real exchange timestamp.
+async function yahooQuote(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1m`;
+  const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+  if (!r.ok) throw new Error(`${symbol} quote HTTP ${r.status}`);
+  const result = (await r.json()).chart?.result?.[0];
+  if (!result) throw new Error(`${symbol} quote unavailable`);
+  const q = result.indicators?.quote?.[0];
+  const ts = result.timestamp || [];
+  for (let i = ts.length - 1; i >= 0; i--) {
+    const price = q?.close?.[i];
+    if (price != null && Number.isFinite(price)) return { price, time: ts[i] * 1000 };
+  }
+  throw new Error(`${symbol} has no intraday price`);
+}
+
 // ---------- INDICATORS ----------
 const sma = (a, n) => a.slice(-n).reduce((x, y) => x + y, 0) / Math.min(n, a.length);
 function rsi(a, n = 14) {
@@ -444,13 +461,16 @@ async function tick() {
     LAST.src = live ? "Angel One live" : "Yahoo (delayed)";
     if (!live) {
       const i0 = (S.rr || 0) % CFG.watchlist.length; S.rr = i0 + 5;
+      const stamps = [];
       for (const sym of new Set([...Object.keys(S.positions), ...CFG.watchlist.slice(i0, i0 + 5)])) {
-        try { LAST.px[sym] = (await candles(sym + ".NS")).close.at(-1); } catch {}
+        try { const q = await yahooQuote(sym + ".NS"); LAST.px[sym] = q.price; stamps.push(q.time); } catch (e) { log("Yahoo quote", sym, e.message); }
       }
-      LAST.pxAt = Date.now();
+      if (stamps.length) LAST.pxAt = Math.min(...stamps);
     }
     if (!live || S.tc % 4 === 0) {
-      const n = (await candles("^NSEI")).close.at(-1);
+      const nq = live ? null : await yahooQuote("^NSEI");
+      const n = live ? (await candles("^NSEI")).close.at(-1) : nq.price;
+      if (nq) LAST.pxAt = LAST.pxAt ? Math.min(LAST.pxAt, nq.time) : nq.time;
       LAST.nifty = n;
       const d = LAST.npc ? (n / LAST.npc - 1) * 100 : 0, lvl = d <= -3 ? 3 : d <= -2 ? 2 : d <= -1 ? 1 : 0, day = istNow().day;
       if (S.emDay !== day) { S.emDay = day; S.emLvl = 0; }
@@ -504,10 +524,12 @@ async function runCycle(manual = false) {
       await sleep(300);
     }
     stocks.sort((a, b) => b.score - a.score);
-    LAST = { time: new Date().toISOString(), nifty: m.price, vix: m.vix, regimeNote: m.note, stocks, regime: m.regime, nc: m.nc, npc: m.pc,
+    const previousQuotes = { px: LAST.px || {}, pxAt: LAST.pxAt || 0, src: LAST.src || "Yahoo (delayed)" };
+    LAST = { ...previousQuotes, time: new Date().toISOString(), nifty: m.price, vix: m.vix, regimeNote: m.note, stocks, regime: m.regime, nc: m.nc, npc: m.pc,
       all: stocks.map((x) => ({ sym: x.sym, price: x.price, pc: x.pc, score: x.score, tv: x.tv, rsi: Math.round(x.rsi) })) };
     try { LAST.safe = (await candles(CFG.safeAsset + ".NS")).close.at(-1); } catch {}
-    LAST.pxAt = Date.now();
+    // Keep the quote timestamp from the intraday quote poll; daily research candles
+    // must not make old market prices appear newly refreshed.
 
     // Regime change alerts
     if (m.regime !== S.regime) {
@@ -624,14 +646,23 @@ button{border:1px solid var(--bd);background:var(--gl);color:var(--fg);padding:8
 .bl{filter:blur(9px)}input{padding:8px 12px;border-radius:10px;border:1px solid var(--bd);background:var(--gl);color:var(--fg)}
 #mo{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;align-items:center;justify-content:center;padding:14px}.md{max-width:600px;width:100%;max-height:88vh;overflow:auto;background:rgba(20,16,40,.97)}
 #em{position:fixed;inset:0;z-index:99;background:rgba(190,0,20,.93);animation:emf 1s infinite alternate;display:none;place-items:center;text-align:center;padding:20px}@keyframes emf{to{background:rgba(120,0,10,.96)}}.emg h1{font-size:34px;margin:0 0 10px}
+/* Premium glass terminal + persistent left navigation */
+body{padding:0 24px 44px 246px;scroll-behavior:smooth;background:#080a0d}body:before{background:radial-gradient(900px 500px at 85% -5%,rgba(205,160,74,.13),transparent),radial-gradient(700px 500px at 0% 100%,rgba(30,80,80,.12),transparent)}
+.sidebar{position:fixed;z-index:30;left:0;top:0;bottom:0;width:220px;padding:22px 14px;display:flex;flex-direction:column;gap:8px;background:rgba(10,13,17,.82);border-right:1px solid rgba(218,180,100,.18);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px)}
+.sbbrand{font-size:18px;font-weight:800;letter-spacing:.4px;padding:8px 10px 22px;color:#f3d48c}.sbcap{font-size:10px;letter-spacing:1.8px;color:#8d8a80;padding:14px 10px 5px}.sidebar a,.sidebar button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;text-decoration:none;color:#c4c1b8;background:transparent;border:1px solid transparent;padding:11px 12px;border-radius:11px;font-size:13px}.sidebar a:hover,.sidebar button:hover{background:rgba(218,180,100,.1);border-color:rgba(218,180,100,.2);color:#ffe2a1}.sidebar .sbfoot{margin-top:auto}.top{position:sticky;top:0;z-index:20;margin:0 -24px 16px;padding:14px 24px;background:rgba(8,10,13,.82);backdrop-filter:blur(22px);border-bottom:1px solid rgba(218,180,100,.12)}.brand{color:#f3d48c}.g{background:linear-gradient(145deg,rgba(255,255,255,.075),rgba(255,255,255,.025));border:1px solid rgba(218,180,100,.15);box-shadow:0 16px 44px rgba(0,0,0,.24)}button:hover,button.on{background:rgba(218,180,100,.18);border-color:rgba(218,180,100,.35)}.av{background:linear-gradient(135deg,#e7c77f,#8d682e);color:#17130a}.pill{border-color:rgba(218,180,100,.2)}
+#mo{background:rgba(2,5,8,.72);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}.md{background:linear-gradient(145deg,rgba(30,34,39,.96),rgba(13,17,21,.96));border:1px solid rgba(232,194,112,.32);box-shadow:0 24px 90px rgba(0,0,0,.6),0 0 45px rgba(218,180,100,.08);border-radius:22px}
+.pinbox{max-width:390px;text-align:center;padding:28px}.pinbox .pinmark{width:54px;height:54px;margin:0 auto 14px;border-radius:18px;display:grid;place-items:center;color:#f3d48c;background:rgba(218,180,100,.13);font-size:24px}.pinbox input{width:100%;margin:14px 0 8px;text-align:center;font-size:22px;letter-spacing:9px;padding:14px;border-color:rgba(232,194,112,.3)}.pinbox .pinerr{min-height:20px;color:#ff7b83;font-size:12px}
+.mapwrap{position:relative;overflow:hidden;border-radius:14px;background:radial-gradient(ellipse at 50% 45%,rgba(210,166,76,.11),transparent 70%)}#im{width:100%;height:440px;max-height:none;cursor:grab;touch-action:none}#im:active{cursor:grabbing}.maptools{position:absolute;right:10px;top:10px;display:flex;gap:6px}.maptools button{background:rgba(14,16,18,.85);border-color:rgba(232,194,112,.35);color:#f1d18c}.maphint{font-size:11px;color:var(--mut);padding:5px 2px 0}
+#im .india-shape{fill:rgba(218,180,100,.17);stroke:#e4c276;stroke-width:2.2;filter:drop-shadow(0 0 8px rgba(218,180,100,.42))}#im .city-dot{stroke:#f7e3b3;stroke-width:1.2;filter:drop-shadow(0 0 6px rgba(245,201,112,.8))}
+@media(max-width:900px){body{padding:0 12px 30px}.sidebar{position:sticky;top:0;width:auto;height:auto;bottom:auto;flex-direction:row;overflow-x:auto;padding:8px;background:rgba(10,13,17,.95)}.sbbrand,.sbcap,.sbfoot{display:none}.sidebar a,.sidebar button{white-space:nowrap;width:auto;padding:9px 11px}.top{margin:0 -12px 14px;padding:12px}.top .nav{display:none}}
 </style></head><body>
-<div class="top"><span class="brand"><span class="dot"></span>TradeDesk</span><span class="nav"><a href="#ov">Overview</a><a href="#pk">Top picks</a><a href="#hd">Holdings</a><a href="#tr">Trades</a><a href="#al">Alerts</a></span><span class="sp"></span><span class="pill" id="rg"></span><span class="pill" id="md"></span><span class="pill" id="ds"></span><span class="pill" id="ck"></span><button id="lk" data-x="lock">🔓 Balance</button><button data-x="acct">Account</button><button data-x="out">Log out</button></div><div class="tk"><div id="tkr"></div></div>
+<aside class="sidebar"><div class="sbbrand">✦ TRADEDESK <small style="display:block;color:#8d8a80;font-size:10px;font-weight:500;margin-top:4px;letter-spacing:1.5px">INDIA MARKETS</small></div><div class="sbcap">WORKSPACE</div><a href="#ov">◫ &nbsp; Overview</a><a href="#pk">⌁ &nbsp; Top picks</a><a href="#india">◎ &nbsp; India map</a><a href="#heat">▦ &nbsp; Market heatmap</a><a href="#companies">⌕ &nbsp; Companies</a><div class="sbcap">PORTFOLIO</div><a href="#hd">▤ &nbsp; Holdings</a><a href="#tr">⇄ &nbsp; Trades</a><a href="#al">◉ &nbsp; Alerts</a><div class="sbcap">ACCOUNT</div><button data-x="acct">◉ &nbsp; Account details</button><button id="lk" data-x="lock">♙ &nbsp; Lock balance</button><div class="sbfoot"><button data-x="out">↪ &nbsp; Log out</button></div></aside><div class="top"><span class="brand"><span class="dot"></span>TradeDesk</span><span class="sp"></span><span class="pill" id="rg"></span><span class="pill" id="md"></span><span class="pill" id="ds"></span><span class="pill" id="ck"></span></div><div class="tk"><div id="tkr"></div></div>
 <div class="st" id="t"></div>
 <div class="main" id="ov"><div class="g"><div class="tabs" id="tb"></div><canvas id="ch"></canvas><div id="sub" style="color:var(--mut);font-size:12px;margin-top:6px"></div></div>
 <div style="display:grid;gap:12px;align-content:start"><div class="g"><h3>Controls</h3><div id="ct"></div></div><div class="g"><h3>Where your money is</h3><canvas id="a" style="height:170px"></canvas><div id="lg" style="font-size:12px;margin-top:6px"></div></div></div></div>
 <h3 id="pk" style="margin:6px 2px">Top picks (tap a card for its chart)</h3><div class="cards" id="cd"></div>
-<div class="main"><div class="g"><h3>India live map (companies by HQ city, simplified outline)</h3><svg id="im" viewBox="0 0 400 440" style="width:100%;max-height:430px"></svg></div><div class="g"><h3>Nifty options view (CE / PE)</h3><div id="op"></div></div></div>
-<h3 style="margin:6px 2px">India market map (live heatmap, tap a tile for its chart)</h3><div class="g" style="margin-bottom:12px"><div class="hm" id="hm"></div></div><div class="g w" style="margin-bottom:12px"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><h3 style="margin:0">All companies (live)</h3><input id="q" placeholder="Search company..."></div><div id="ls"></div></div>
+<div class="main" id="india"><div class="g"><h3>India market footprint <span style="color:#e4c276;font-weight:400">· Gold map</span></h3><div class="mapwrap"><svg id="im" viewBox="0 0 400 440" preserveAspectRatio="xMidYMid meet"></svg><div class="maptools"><button data-map="in">＋</button><button data-map="out">−</button><button data-map="reset">Reset</button></div></div><div class="maphint">Scroll to zoom · Drag to move · Use controls to zoom in and out</div></div><div class="g"><h3>Nifty options view (CE / PE)</h3><div id="op"></div></div></div>
+<h3 id="heat" style="margin:6px 2px">India market map (live heatmap, tap a tile for its chart)</h3><div class="g" style="margin-bottom:12px"><div class="hm" id="hm"></div></div><div class="g w" id="companies" style="margin-bottom:12px"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><h3 style="margin:0">All companies (live)</h3><input id="q" placeholder="Search company..."></div><div id="ls"></div></div>
 <div class="g w" id="hd" style="margin-bottom:12px"><h3>Holdings</h3><div id="p"></div></div>
 <div class="main"><div class="g w" id="tr"><h3>Recent trades</h3><div id="trd"></div></div><div class="g" id="al"><h3>Alerts</h3><div id="alt"></div></div></div>
 <div class="g w" style="margin-top:12px"><h3>Most valuable stocks trading now (by traded value)</h3><div id="mv"></div></div><div id="em"></div><div id="mo" style="display:none"></div>
@@ -686,7 +717,7 @@ function marks(k){const cl=k.map(c=>c[3]),sm=(i,n)=>cl.slice(i-n+1,i+1).reduce((
 const chg=(p,pc)=>pc?(p/pc-1)*100:0,sgn=n=>(n>=0?"+":"")+n.toFixed(2)+"%",sgl=s=>s.score>=5?"BUY":s.score<=1?"SELL":"HOLD";
 function modal(h){$("mo").style.display="flex";$("mo").innerHTML='<div class="md g">'+h+'<p><button data-x="close">Close</button></p></div>'}
 async function post(b){const r=await fetch("/api/control",{method:"POST",headers:{"X-Requested-With":"dashboard"},body:JSON.stringify(b)});alert(r.ok?"Done: "+b.action+(b.sym?" "+b.sym:""):await r.text());load()}
-let bad=0;async function pin(){if(bad>=3){alert("Too many wrong PINs. Reload the page and wait.");return false}const p=prompt("Enter your PIN:");if(p===null)return false;if(!D.pin){const r=await fetch("/api/pin",{method:"POST",headers:{"X-Requested-With":"dashboard"},body:JSON.stringify({pin:p})});if(r.ok){bad=0;await load();return true}bad++;alert(await r.text());return false}const h=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(D.psalt+p)),x=[...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,"0")).join("");if(x===D.pin){UNL=Date.now()+3e5;bad=0;return true}bad++;alert("Wrong PIN");return false}
+let bad=0;async function pin(){if(bad>=3){alert("Too many wrong PINs. Please wait before trying again.");return false}return new Promise(resolve=>{modal('<div class="pinbox"><div class="pinmark">♙</div><h3>Secure account access</h3><p style="color:var(--mut);font-size:13px">Enter your PIN to view protected account information</p><input id="pinentry" type="password" inputmode="numeric" autocomplete="one-time-code" maxlength="12" placeholder="••••"/><div class="pinerr" id="pinerr"></div><button id="pinsubmit" class="grn" style="width:100%;padding:11px">Unlock securely</button><button id="pincancel" style="width:100%;margin-top:8px">Cancel</button></div>');const input=$("pinentry"),err=$("pinerr");input.focus();const finish=ok=>{$("mo").style.display="none";resolve(ok)};const submit=async()=>{const p=input.value.trim();if(!p){err.textContent="Please enter your PIN.";return}const r=await fetch("/api/pin",{method:"POST",headers:{"X-Requested-With":"dashboard"},body:JSON.stringify({pin:p})});if(!D.pin){if(r.ok){bad=0;await load();finish(true);return}bad++;err.textContent=await r.text();return}const h=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(D.psalt+p)),x=[...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,"0")).join("");if(x===D.pin&&r.ok){UNL=Date.now()+3e5;bad=0;finish(true);return}bad++;err.textContent=bad>=3?"Too many attempts. Please wait.":"Incorrect PIN. Please try again."};$("pinsubmit").onclick=submit;$("pincancel").onclick=()=>finish(false);input.addEventListener("keydown",e=>{if(e.key==="Enter")submit();if(e.key==="Escape")finish(false)});});}
 function buyModal(sym){const s=(D.all||[]).find(z=>z.sym===sym);if(!s)return;const pr=s.price,pct=D.pct||.05,qty=Math.floor(D.equity*pct/pr),sl=pr*(1-(D.slp||.05));
 modal('<h3>Buy '+sym+'</h3><p>Signal: <b>'+sgl(s)+'</b> | Price '+f(pr)+' | Day '+sgn(chg(pr,s.pc))+'</p>'+(qty<1?'<p class="dn">Budget per trade is too small for 1 share.</p>':'<table><tr><td>Quantity to buy</td><td><b>'+qty+' shares</b></td></tr><tr><td>Total cost</td><td>'+f(qty*pr)+' ('+(pct*100).toFixed(0)+'% of account)</td></tr><tr><td>Stop-loss</td><td>'+f(sl)+'</td></tr><tr><td>Target (+10%)</td><td>'+f(pr*1.1)+'</td></tr><tr><td>Max loss at stop-loss</td><td class="dn">'+f(qty*(pr-sl))+'</td></tr></table>')+(D.regime==="BEARISH"?'<p class="dn">Market is BEARISH: the bot will block this buy.</p>':'')+'<p style="color:var(--mut);font-size:12px">'+(D.live?"REAL MONEY order.":"Paper trade (virtual money).")+' Not advice; you can lose money.</p>'+(qty>=1?'<button class="grn" data-cb="'+sym+'">Confirm buy</button>':''))}
 async function acct(){if((D.pin||D.pinset)&&LK&&!(await pin()))return;LK=false;render();const un=D.positions.reduce((a,p)=>a+p.pnl,0),st=D.stats||{},row=(a,b)=>'<tr><td>'+a+'</td><td>'+b+'</td></tr>';
@@ -707,13 +738,14 @@ const CITY={M:["Mumbai",72.88,19.07],D:["Delhi NCR",77.2,28.6],B:["Bengaluru",77
 const OUT=[[74.5,36.9],[77.8,35.5],[79.5,32.5],[78.8,30.5],[81,30.2],[80.2,28.8],[84,27.4],[88,27.3],[88.1,26.5],[89.8,26.7],[92,27],[95.5,28.2],[97.3,28.3],[96,27],[94.8,25.2],[93.5,23.8],[92.5,22.5],[92.1,24.8],[90.5,25.2],[89.8,26],[88.8,26.2],[88.1,25.2],[88.6,22.3],[87,21.5],[86.5,20.2],[85,19.3],[83.5,18],[82.2,16.8],[80.5,15.5],[80.2,13.2],[79.8,10.3],[78.2,8.9],[77.5,8.1],[76.5,9.5],[75.5,11.8],[74.8,13.5],[73.8,16],[72.8,19],[72.8,21],[72.5,21.8],[70.2,21],[69,22.3],[70.5,23],[68.5,23.5],[70.2,25],[71,27.5],[72.5,29.5],[74.5,31],[74,32.5],[74.5,34],[73.5,35]];
 const PX=(lo,la)=>[((lo-68)/30*400).toFixed(1),((37-la)/31*440).toFixed(1)];
 function extras2(){const all=D.all||[],agg={};all.forEach(s=>{const c=HQ[s.sym];if(!c)return;(agg[c]=agg[c]||{n:0,t:0}).n++;agg[c].t+=chg(s.price,s.pc)});
-let h='<polygon points="'+OUT.map(p=>PX(p[0],p[1]).join(",")).join(" ")+'" fill="rgba(124,77,255,.12)" stroke="rgba(255,255,255,.35)" stroke-width="1.5"/>';
-Object.keys(agg).forEach(k=>{const a=agg[k],v=a.t/a.n,c=CITY[k],xy=PX(c[1],c[2]),x=+xy[0],y=+xy[1];h+='<circle cx="'+x+'" cy="'+y+'" r="'+(9+a.n*1.6)+'" fill="'+(v>=0?"rgba(34,197,139,.75)":"rgba(255,93,108,.75)")+'"/><text x="'+x+'" y="'+(y+4)+'" text-anchor="middle" font-size="10" fill="#fff">'+a.n+'</text><text x="'+(x+14+a.n*1.4)+'" y="'+(y+4)+'" font-size="11" fill="#eceaf6">'+c[0]+" "+sgn(v)+"</text>"});
+let h='<polygon points="'+OUT.map(p=>PX(p[0],p[1]).join(",")).join(" ")+'" class="india-shape"/>';
+Object.keys(agg).forEach(k=>{const a=agg[k],v=a.t/a.n,c=CITY[k],xy=PX(c[1],c[2]),x=+xy[0],y=+xy[1];h+='<circle cx="'+x+'" cy="'+y+'" r="'+(9+a.n*1.6)+'" class="city-dot" fill="'+(v>=0?"#d9b66e":"#9b7950")+'"/><text x="'+x+'" y="'+(y+4)+'" text-anchor="middle" font-size="10" fill="#fff">'+a.n+'</text><text x="'+(x+14+a.n*1.4)+'" y="'+(y+4)+'" font-size="11" fill="#eceaf6">'+c[0]+" "+sgn(v)+"</text>"});
 $("im").innerHTML=h;
 const mm=marks(D.nc||[]),lm=mm.length?mm[mm.length-1][1]:null,o=D.opt||{},atm=o.strike||(D.nifty?Math.round(D.nifty/50)*50:0),pr=v=>v!=null?"₹"+v:"needs Angel One live feed";
 $("op").innerHTML='<p>Bias: <b class="'+(lm==="up"?"up":lm==="dn"?"dn":"")+'">'+(lm==="up"?"CE (call) - bullish":lm==="dn"?"PE (put) - bearish":"no clear signal")+'</b><br>Market: '+D.regime+'</p><table><tr><td>Nifty spot</td><td>'+(D.nifty?Math.round(D.nifty).toLocaleString("en-IN"):"-")+'</td></tr><tr><td>ATM strike</td><td><b>'+atm+'</b>'+(o.exp?" ("+o.exp+")":"")+'</td></tr><tr><td>ATM CE premium</td><td>'+pr(o.ce)+'</td></tr><tr><td>ATM PE premium</td><td>'+pr(o.pe)+'</td></tr></table><p style="color:var(--mut);font-size:12px">Options can lose 100% of the money in minutes. The bot never trades options. Information only, not advice.</p>';
-const age=D.pxAt?Math.round((Date.now()-D.pxAt)/1000):null,stale=D.open&&age!==null&&age>(D.src==="Angel One live"?30:2700);
-$("ds").innerHTML='<span class="'+(stale?"dn":"up")+'">●</span> '+D.src+(age!==null?" | "+(age<120?age+"s":Math.round(age/60)+"m")+" old":"")+(stale?' | <b class="dn">STALE</b>':"")+(D.mism?' | <b class="dn">'+D.mism+" price mismatch</b>":"")}
+const age=D.pxAt?Math.round((Date.now()-D.pxAt)/1000):null,stale=D.open&&age!==null&&age>(D.src==="Angel One live"?30:1200);
+$("ds").innerHTML='<span class="'+(stale?"dn":"up")+'">●</span> '+D.src+(age!==null?" | "+(age<120?age+"s":Math.round(age/60)+"m")+" since quote":"")+(stale?' | <b class="dn">STALE</b>':"")+(D.mism?' | <b class="dn">'+D.mism+" price mismatch</b>":"")}
+let mapView={x:0,y:0,w:400,h:440},mapDrag=null;function applyMap(){const el=$("im");el.setAttribute("viewBox",[mapView.x,mapView.y,mapView.w,mapView.h].join(" "))}function zoomMap(factor,cx=200,cy=220){const nw=Math.max(120,Math.min(400,mapView.w*factor)),nh=nw*1.1,rx=(cx-mapView.x)/mapView.w,ry=(cy-mapView.y)/mapView.h;mapView={x:Math.max(0,Math.min(400-nw,cx-rx*nw)),y:Math.max(0,Math.min(440-nh,cy-ry*nh)),w:nw,h:nh};applyMap()}$("im").addEventListener("wheel",e=>{e.preventDefault();const r=$("im").getBoundingClientRect(),x=(e.clientX-r.left)/r.width*mapView.w+mapView.x,y=(e.clientY-r.top)/r.height*mapView.h+mapView.y;zoomMap(e.deltaY<0?.85:1.18,x,y)},{passive:false});$("im").addEventListener("pointerdown",e=>{mapDrag={x:e.clientX,y:e.clientY,view:{...mapView}};$("im").setPointerCapture(e.pointerId)});$("im").addEventListener("pointermove",e=>{if(!mapDrag)return;const r=$("im").getBoundingClientRect(),dx=(e.clientX-mapDrag.x)/r.width*mapDrag.view.w,dy=(e.clientY-mapDrag.y)/r.height*mapDrag.view.h;mapView={...mapDrag.view,x:Math.max(0,Math.min(400-mapDrag.view.w,mapDrag.view.x-dx)),y:Math.max(0,Math.min(440-mapDrag.view.h,mapDrag.view.y-dy))};applyMap()});["pointerup","pointercancel","lostpointercapture"].forEach(ev=>$("im").addEventListener(ev,()=>mapDrag=null));document.addEventListener("click",e=>{const b=e.target.closest("[data-map]");if(!b)return;if(b.dataset.map==="reset"){mapView={x:0,y:0,w:400,h:440};applyMap()}else zoomMap(b.dataset.map==="in"?.78:1.28)});
 async function load(){const r=await fetch("/api/state");if(r.status===401){location="/login";return}D=await r.json();LK=D.locked||(!!D.pin&&Date.now()>UNL);render();extras();extras2()}
 async function ctl(a){const b={action:a};if(a==="golive"){const t=prompt("REAL MONEY. Type GO LIVE to confirm:");if(t!=="GO LIVE")return;b.confirm=t}const r=await fetch("/api/control",{method:"POST",headers:{"X-Requested-With":"dashboard"},body:JSON.stringify(b)});if(!r.ok)alert(await r.text());load()}
 const C=$("ch");["mousemove","touchmove"].forEach(ev=>C.addEventListener(ev,e=>{const p=e.touches?e.touches[0]:e;MX=p.clientX-C.getBoundingClientRect().left;if(D)chart()},{passive:true}));C.onmouseleave=()=>{MX=-1;if(D)chart()};
