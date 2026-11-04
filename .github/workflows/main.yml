@@ -3,7 +3,7 @@ name: trading-bot
 on:
   schedule:
     - cron: "*/10 3-10 * * 1-5"   # every 10 min during Indian market hours (UTC)
-    - cron: "17 */3 * * *"        # every 3 hours, to answer your Telegram commands
+    - cron: "17 */3 * * *"        # every 3 hours, to answer Telegram commands
   workflow_dispatch:              # "Run workflow" button
 
 concurrency:
@@ -12,11 +12,16 @@ concurrency:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -34,3 +39,13 @@ jobs:
           ONCE: "1"
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DASH_PASS: ${{ secrets.DASH_PASS }}
+      - name: Upload web page
+        if: ${{ hashFiles('site/index.html') != '' }}
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Publish to GitHub Pages
+        id: deploy
+        if: ${{ hashFiles('site/index.html') != '' }}
+        uses: actions/deploy-pages@v4
