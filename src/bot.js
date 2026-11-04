@@ -330,7 +330,7 @@ async function handleUpdate(u) {
   if (text === "/status") return say(statusText());
   if (text === "/chart") return sendEquityChart();
   if (text === "/portfolio") return sendPortfolioChart();
-  if (text === "/dashboard") return say("Dashboard: " + (E.DASH_URL || "http://localhost:" + DASH_PORT));
+  if (text === "/dashboard") return E.ONCE === "1" ? sendDashboardFile() : say("Dashboard: " + (E.DASH_URL || "http://localhost:" + DASH_PORT));
   if (text === "/scan") { await runCycle(true); return; }
   if (text === "/pause") { S.paused = true; save(); return say("Paused. No new buys."); }
   if (text === "/resume") { S.paused = false; save(); return say("Resumed."); }
@@ -671,10 +671,38 @@ function startDashboard() {
   }).listen(DASH_PORT, DASH_HOST, () => log(`Dashboard: http://${DASH_HOST}:${DASH_PORT}`));
 }
 
+// ---------- GITHUB ACTIONS MODE (ONCE=1): one short run, state kept in Actions cache ----------
+async function sendDashboardFile() {
+  const state = JSON.stringify(apiState()).replace(/</g, "\\u003c");
+  const stub = `<script>const STATE=${state};const _f=window.fetch;window.fetch=(u,o)=>u==="/api/state"?Promise.resolve({status:200,json:()=>Promise.resolve(STATE)}):_f(u,o);</script>`;
+  const fd = new FormData();
+  fd.append("chat_id", CHAT_ID);
+  fd.append("caption", "Dashboard snapshot - open this file in your browser. " + statusText().split("\n")[0]);
+  fd.append("document", new Blob([PAGE.replace("<body>", () => "<body>" + stub)], { type: "text/html" }), "dashboard.html");
+  const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendDocument`, { method: "POST", body: fd }).then((x) => x.json()).catch(() => null);
+  if (!r || !r.ok) await say("Could not send the dashboard file.");
+}
+
+async function once() {
+  if (S.snap) LAST = { ...LAST, ...S.snap };
+  const due = !S.lastCycle || Date.now() - S.lastCycle > (CFG.scanEveryMin - 2) * 60000;
+  if (due && marketOpen()) { await runCycle(); S.lastCycle = Date.now(); }
+  await tick();
+  S.snap = { stocks: LAST.stocks.slice(0, 10), regimeNote: LAST.regimeNote, time: LAST.time, regime: LAST.regime, safe: LAST.safe, px: LAST.px };
+  const r = await tg("getUpdates", { timeout: 0, offset: S.tgOffset || 0 });
+  for (const u of r.result || []) { S.tgOffset = u.update_id + 1; await handleUpdate(u); }
+  save();
+}
+
 // ---------- START ----------
 (async function main() {
   if (!TG_TOKEN || !CHAT_ID) { console.error("Set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID in .env"); process.exit(1); }
   if (S.live && E.LIVE_ENABLED !== "1") goPaper(); // safety: never resume live by accident
+  if (E.ONCE === "1") {
+    try { await once(); } catch (e) { log("once error", e.message); save(); }
+    await sleep(3000);
+    process.exit(0);
+  }
   startDashboard();
   await say(`🚀 Trading assistant started. Dashboard: ${E.DASH_URL || "http://localhost:" + DASH_PORT}\nSend /help`);
   pollTelegram();
