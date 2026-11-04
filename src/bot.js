@@ -1014,17 +1014,19 @@ async function once() {
   S.snap = { stocks: LAST.stocks.slice(0, 10), regimeNote: LAST.regimeNote, time: LAST.time, regime: LAST.regime, safe: LAST.safe, px: LAST.px, nc: LAST.nc, nifty: LAST.nifty, vix: LAST.vix, npc: LAST.npc, all: LAST.all, pxAt: LAST.pxAt, src: LAST.src };
   const r = await tg("getUpdates", { timeout: 0, offset: S.tgOffset || 0 });
   for (const u of r.result || []) { S.tgOffset = u.update_id + 1; await handleUpdate(u); }
-  writeSite();
+  await writeSite();
   save();
 }
 
 // ---------- GITHUB PAGES SITE (encrypted data + password login, all in the browser) ----------
-const STUB = `const u8=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));let K;
-async function st(){const j=sessionStorage.getItem("k");if(!j)throw 0;
+const STUB = `const u8=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));let K,STATE_PROMISE;
+async function st(){if(STATE_PROMISE)return STATE_PROMISE;STATE_PROMISE=(async()=>{const j=sessionStorage.getItem("k");if(!j)throw 0;
 K=K||await crypto.subtle.importKey("jwk",JSON.parse(j),{name:"AES-GCM"},false,["decrypt"]);
 const d=await(await fetch("data.json?t="+Date.now())).json();
-return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:u8(d.i)},K,u8(d.c))))}
-const _f=window.fetch;window.fetch=(u,o)=>u==="/api/state"?st().then(s=>({status:200,json:()=>s})).catch(()=>({status:401})):u==="/api/control"?Promise.resolve({ok:false,status:403,text:()=>Promise.resolve("Controls work in Telegram only on this web page.")}):_f(u,o);`;
+return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:u8(d.i)},K,u8(d.c))))})();return STATE_PROMISE}
+const _f=window.fetch;window.fetch=(u,o)=>{if(u==="/api/state")return st().then(s=>({status:200,json:()=>Promise.resolve(s)})).catch(()=>({status:401}));
+if(typeof u==="string"&&u.startsWith("/api/company?")){const sym=new URL(u,location.href).searchParams.get("symbol");return st().then(s=>{const item=s.companyCharts&&s.companyCharts[String(sym||"").toUpperCase()];return item&&!item.error?{ok:true,status:200,json:()=>Promise.resolve(item),text:()=>Promise.resolve(JSON.stringify(item))}:{ok:false,status:502,json:()=>Promise.resolve(item||{error:"Historical candles were not included in this GitHub Pages snapshot. Run the GitHub Actions workflow again."}),text:()=>Promise.resolve(item?.error||"Historical candles unavailable in this snapshot.")}}).catch(()=>({ok:false,status:401,text:()=>Promise.resolve("Please sign in again to load company charts.")}));}
+if(u==="/api/control")return Promise.resolve({ok:false,status:403,text:()=>Promise.resolve("Controls work in Telegram only on this web page.")});return _f(u,o)};`;
 const STATIC_LOGIN_JS = `const u8=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
 window.staticLogin=async(us,pw)=>{try{const d=await(await fetch("data.json?t="+Date.now())).json();
 const m=await crypto.subtle.importKey("raw",new TextEncoder().encode(us+":"+pw),"PBKDF2",false,["deriveKey"]);
@@ -1037,20 +1039,40 @@ const LOGIN_STATIC = LOGIN
   .replace('if(r.ok)location="/";', "if(r.ok){}")
   .replace("</body>", () => "<script>" + STATIC_LOGIN_JS + "</script></body>");
 
-function writeSite() {
+async function collectCompanyCharts() {
+  const symbols = CFG.watchlist;
+  const charts = {};
+  let cursor = 0;
+  const workers = Array.from({ length: 8 }, async () => {
+    while (cursor < symbols.length) {
+      const sym = symbols[cursor++];
+      try { charts[sym] = await companyHistory(sym); }
+      catch (e) { charts[sym] = { symbol: sym, candles: [], error: e.message || String(e) }; log("Company chart snapshot", sym, charts[sym].error); }
+    }
+  });
+  await Promise.all(workers);
+  const ok = Object.values(charts).filter(x => x.candles && x.candles.length > 1).length;
+  log(`Company chart snapshot: ${ok}/${symbols.length} symbols have daily candles`);
+  return charts;
+}
+
+async function writeSite() {
   if (!E.DASH_PASS || E.DASH_PASS.length < 12) return log("DASH_PASS (12+ chars) missing: web page skipped");
+  // GitHub Pages is static and cannot execute /api/company. Fetch historical
+  // candles in Actions, then store them inside the encrypted dashboard snapshot.
+  const companyCharts = await collectCompanyCharts();
+  const siteState = { ...apiState(true), companyCharts };
   S.siteSalt = S.siteSalt || crypto.randomBytes(16).toString("base64");
   const iv = crypto.randomBytes(12);
   const key = crypto.pbkdf2Sync((E.DASH_USER || "admin") + ":" + E.DASH_PASS, Buffer.from(S.siteSalt, "base64"), 200000, 32, "sha256");
   const c = crypto.createCipheriv("aes-256-gcm", key, iv);
-  const ct = Buffer.concat([c.update(JSON.stringify(apiState(true)), "utf8"), c.final(), c.getAuthTag()]);
+  const ct = Buffer.concat([c.update(JSON.stringify(siteState), "utf8"), c.final(), c.getAuthTag()]);
   fs.mkdirSync("site", { recursive: true });
   fs.writeFileSync("site/data.json", JSON.stringify({ s: S.siteSalt, i: iv.toString("base64"), c: ct.toString("base64") }));
   fs.writeFileSync("site/dash.html", PAGE.replace('location="/login"', 'location="./"').replace("<body>", () => "<body><script>" + STUB + "</script>"));
   fs.writeFileSync("site/index.html", LOGIN_STATIC);
   fs.writeFileSync("site/.nojekyll", "");
 }
-
 // ---------- START ----------
 (async function main() {
   if (!TG_TOKEN || !CHAT_ID) { console.error("Set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID in .env"); process.exit(1); }
