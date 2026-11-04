@@ -703,23 +703,22 @@ const d=await(await fetch("data.json?t="+Date.now())).json();
 return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:u8(d.i)},K,u8(d.c))))}
 const _f=window.fetch;window.fetch=(u,o)=>u==="/api/state"?st().then(s=>({status:200,json:()=>s})).catch(()=>({status:401})):u==="/api/control"?Promise.resolve({ok:false,status:403,text:()=>Promise.resolve("Controls work in Telegram only on this web page.")}):_f(u,o);`;
 const STATIC_LOGIN_JS = `const u8=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
-window.staticLogin=async pw=>{try{const d=await(await fetch("data.json?t="+Date.now())).json();
-const m=await crypto.subtle.importKey("raw",new TextEncoder().encode(pw),"PBKDF2",false,["deriveKey"]);
+window.staticLogin=async(us,pw)=>{try{const d=await(await fetch("data.json?t="+Date.now())).json();
+const m=await crypto.subtle.importKey("raw",new TextEncoder().encode(us+":"+pw),"PBKDF2",false,["deriveKey"]);
 const k=await crypto.subtle.deriveKey({name:"PBKDF2",salt:u8(d.s),iterations:200000,hash:"SHA-256"},m,{name:"AES-GCM",length:256},true,["decrypt"]);
 await crypto.subtle.decrypt({name:"AES-GCM",iv:u8(d.i)},k,u8(d.c));
 sessionStorage.setItem("k",JSON.stringify(await crypto.subtle.exportKey("jwk",k)));location="dash.html";return{ok:true}}
 catch(e){return{ok:false,text:async()=>"Wrong password, or no data yet. Wait for the first bot run."}}};`;
 const LOGIN_STATIC = LOGIN
-  .replace('fetch("/login",{method:"POST",body:JSON.stringify({u:document.getElementById("u").value,p:document.getElementById("p").value})})', 'window.staticLogin(document.getElementById("p").value)')
+  .replace('fetch("/login",{method:"POST",body:JSON.stringify({u:document.getElementById("u").value,p:document.getElementById("p").value})})', 'window.staticLogin(document.getElementById("u").value.trim(),document.getElementById("p").value)')
   .replace('if(r.ok)location="/";', "if(r.ok){}")
-  .replace('<input id="u" placeholder="Username" autocomplete="username">', '<input id="u" type="hidden">')
   .replace("</body>", () => "<script>" + STATIC_LOGIN_JS + "</script></body>");
 
 function writeSite() {
   if (!E.DASH_PASS || E.DASH_PASS.length < 12) return log("DASH_PASS (12+ chars) missing: web page skipped");
   S.siteSalt = S.siteSalt || crypto.randomBytes(16).toString("base64");
   const iv = crypto.randomBytes(12);
-  const key = crypto.pbkdf2Sync(E.DASH_PASS, Buffer.from(S.siteSalt, "base64"), 200000, 32, "sha256");
+  const key = crypto.pbkdf2Sync((E.DASH_USER || "admin") + ":" + E.DASH_PASS, Buffer.from(S.siteSalt, "base64"), 200000, 32, "sha256");
   const c = crypto.createCipheriv("aes-256-gcm", key, iv);
   const ct = Buffer.concat([c.update(JSON.stringify(apiState()), "utf8"), c.final(), c.getAuthTag()]);
   fs.mkdirSync("site", { recursive: true });
