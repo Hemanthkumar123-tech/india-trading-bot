@@ -1,0 +1,36 @@
+name: trading-bot
+
+on:
+  schedule:
+    - cron: "*/10 3-10 * * 1-5"   # every 10 min during Indian market hours (UTC)
+    - cron: "17 */3 * * *"        # every 3 hours, to answer your Telegram commands
+  workflow_dispatch:              # "Run workflow" button
+
+concurrency:
+  group: trading-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Restore bot state
+        uses: actions/cache@v4
+        with:
+          path: state.json
+          key: bot-state-${{ github.run_id }}
+          restore-keys: bot-state-
+      - name: Run bot once
+        run: node src/bot.js
+        env:
+          ONCE: "1"
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
