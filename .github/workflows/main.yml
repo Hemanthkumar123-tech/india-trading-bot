@@ -39,6 +39,7 @@ jobs:
           ONCE: "1"
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DASH_USER: ${{ secrets.DASH_USER }}
           DASH_PASS: ${{ secrets.DASH_PASS }}
       - name: Upload web page
         if: ${{ hashFiles('site/index.html') != '' }}
